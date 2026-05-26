@@ -289,3 +289,7 @@ The `.github/CODEOWNERS` file maps directories to their maintainers:
 ## Security
 
 If you discover a security vulnerability, please review our [Security Policy](SECURITY.md) for responsible disclosure guidelines. Do not open public issues for security concerns.
+
+## Governance
+
+Project roles, decision-making processes, and the path to becoming a maintainer are described in [docs/GOVERNANCE.md](docs/GOVERNANCE.md).
