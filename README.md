@@ -179,6 +179,18 @@ If your environment uses the older package naming, `soroban-cli` may also be val
 
 ## Getting Started
 
+### One-command setup
+
+The fastest way to get started is the setup script. It checks all prerequisites, installs JS dependencies, and builds the contracts:
+
+```bash
+./scripts/setup.sh
+```
+
+The script is idempotent — safe to run again after pulling new changes. It will print clear error messages for any missing tools and a next-steps summary on success.
+
+### Manual setup
+
 ### 1. Install JavaScript Workspace Dependencies
 
 ```bash
