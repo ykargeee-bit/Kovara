@@ -1,7 +1,15 @@
 import React, { useMemo } from "react";
-import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
+import {
+  GestureResponderEvent,
+  Pressable,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
 import { useRouter } from "expo-router";
 
+import { useLike } from "../hooks/useLike";
 import { useTheme } from "../theme/useTheme";
 import { PostCardSkeleton as SharedPostCardSkeleton } from "./skeletons/PostCardSkeleton";
 
@@ -13,6 +21,7 @@ export interface Post {
   tip_total: number;
   timestamp: number;
   like_count: number;
+  has_liked?: boolean;
 }
 
 interface FeedPostCardProps {
@@ -26,6 +35,7 @@ interface LegacyPostCardProps {
   content: string;
   timestamp: string | number;
   likes?: number;
+  hasLiked?: boolean;
   isLoading?: boolean;
   onPress?: () => void;
 }
@@ -58,6 +68,7 @@ function normalizePost(props: PostCardProps): { post: Post; timeLabel?: string }
       tip_total: 0,
       timestamp: typeof props.timestamp === "number" ? props.timestamp : 0,
       like_count: props.likes ?? 0,
+      has_liked: props.hasLiked ?? false,
     },
     timeLabel: typeof props.timestamp === "string" ? props.timestamp : undefined,
   };
@@ -69,12 +80,22 @@ export function PostCard(props: PostCardProps) {
   const { post, timeLabel } = normalizePost(props);
   const onPress =
     props.onPress ?? (() => router.push(`/post/${post.id}` as Parameters<typeof router.push>[0]));
+  const { liked, likeCount, pending, like } = useLike({
+    postId: post.id,
+    initialHasLiked: post.has_liked ?? false,
+    initialLikeCount: post.like_count,
+  });
 
   const styles = useMemo(() => createStyles(theme), [theme]);
 
   if ("isLoading" in props && props.isLoading) {
     return <SharedPostCardSkeleton />;
   }
+
+  const handleLikePress = (event: GestureResponderEvent) => {
+    event.stopPropagation();
+    void like();
+  };
 
   return (
     <TouchableOpacity
@@ -97,8 +118,23 @@ export function PostCard(props: PostCardProps) {
       <Text style={styles.content}>{post.content}</Text>
 
       <View style={styles.footer}>
-        <Text style={styles.stat}>♥ {post.like_count}</Text>
-        <Text style={styles.stat}>◎ {post.tip_total}</Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={liked ? "Post already liked" : "Like post"}
+          accessibilityState={{ disabled: liked || pending, selected: liked }}
+          disabled={liked || pending}
+          onPress={handleLikePress}
+          style={({ pressed }) => [
+            styles.likeButton,
+            liked && styles.likeButtonLiked,
+            pressed && !liked && !pending && styles.likeButtonPressed,
+          ]}
+        >
+          <Text style={[styles.stat, liked && styles.statLiked]}>
+            {liked ? "Liked" : "Like"} {likeCount}
+          </Text>
+        </Pressable>
+        <Text style={styles.stat}>Tips {post.tip_total}</Text>
       </View>
     </TouchableOpacity>
   );
@@ -161,12 +197,33 @@ function createStyles(theme: ReturnType<typeof useTheme>["theme"]) {
     },
     footer: {
       flexDirection: "row",
+      alignItems: "center",
       marginTop: 12,
       gap: 16,
+    },
+    likeButton: {
+      minHeight: 32,
+      borderRadius: 999,
+      borderWidth: 1,
+      borderColor: theme.colors.surface.border,
+      paddingHorizontal: 12,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    likeButtonLiked: {
+      borderColor: theme.colors.brand.primary,
+      backgroundColor: theme.colors.brand.primaryLight,
+    },
+    likeButtonPressed: {
+      opacity: 0.82,
     },
     stat: {
       color: theme.colors.text.secondary,
       fontSize: 12,
+      fontWeight: "700",
+    },
+    statLiked: {
+      color: theme.colors.brand.primary,
     },
     skeletonBlock: {
       backgroundColor: theme.colors.surface.surface2,
