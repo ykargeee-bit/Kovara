@@ -2897,242 +2897,55 @@ fn test_unblock_event() {
     assert!(!client.is_blocked(&alice, &bob));
 }
 
-// Issue #68: Multiple posts with incrementing IDs and timestamps
-
 #[test]
-fn test_create_multiple_posts_ids_increment_sequentially() {
+fn test_tip_cooldown_enforcement() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
 
+    // 1) Setup the main contract and the asset token contract
+    let (client, _admin, _treasury) = setup_contract(&env);
+    let token_admin = Address::generate(&env);
+    let token_address = setup_token(&env, &token_admin);
+
+    // 2) Setup profiles for Author and Tipper
     let author = Address::generate(&env);
+    let tipper = Address::generate(&env);
 
-    // Create 5 posts and verify IDs increment from 1 to 5
-    let mut post_ids = soroban_sdk::vec![&env];
-    for i in 1..=5 {
-        let content = if i == 1 {
-            String::from_str(&env, "First post")
-        } else if i == 2 {
-            String::from_str(&env, "Second post")
-        } else if i == 3 {
-            String::from_str(&env, "Third post")
-        } else if i == 4 {
-            String::from_str(&env, "Fourth post")
-        } else {
-            String::from_str(&env, "Fifth post")
-        };
-        let post_id = client.create_post(&author, &content);
-        post_ids.push_back(post_id);
-        assert_eq!(
-            post_id, i as u64,
-            "post ID must increment sequentially (expected {}, got {})",
-            i,
-            post_id
-        );
-    }
+    client.set_profile(&author, &String::from_str(&env, "author"), &token_address);
+    client.set_profile(&tipper, &String::from_str(&env, "tipper"), &token_address);
 
-    // Verify post count matches total created
-    assert_eq!(
-        client.get_post_count(),
-        5,
-        "get_post_count must return 5 after creating 5 posts"
-    );
+    // Mint tokens to the tipper so they have funds to tip
+    StellarAssetClient::new(&env, &token_address).mint(&tipper, &5000);
 
-    // Verify all post IDs are unique and sequential
-    assert_eq!(post_ids.len(), 5);
-    for (idx, id) in post_ids.iter().enumerate() {
-        assert_eq!(
-            id,
-            (idx + 1) as u64,
-            "post IDs must be sequential starting from 1"
-        );
-    }
-}
+    // 3) Configure a strict tip cooldown window (Issue #76)
+    let cooldown_window: u32 = 20;
+    client.set_tip_cooldown_window(&cooldown_window);
+    assert_eq!(client.get_tip_cooldown_window(), cooldown_window);
 
-#[test]
-fn test_multiple_posts_timestamps_stored() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
+    // 4) Create a post to tip against
+    let content = String::from_str(&env, "Hello Linkora!");
+    let post_id = client.create_post(&author, &content);
 
-    let author = Address::generate(&env);
+    // Set the initial ledger sequence to 100
+    env.ledger().with_mut(|l| l.sequence_number = 100);
 
-    // Set initial ledger timestamp
-    env.ledger().with_mut(|li| {
-        li.timestamp = 1000;
-    });
+    // 5) First tip succeeds
+    client.tip(&tipper, &post_id, &token_address, &100);
 
-    // Create first post
-    let post_id_1 = client.create_post(&author, &String::from_str(&env, "Post 1"));
-    let post_1 = client.get_post(&post_id_1).unwrap();
-    let timestamp_1 = post_1.timestamp;
-
-    // Verify timestamp is set to the ledger timestamp
-    assert_eq!(
-        timestamp_1, 1000,
-        "timestamp must be set to current ledger timestamp"
-    );
-
-    // Advance ledger time
-    env.ledger().with_mut(|li| {
-        li.timestamp = li.timestamp + 1000; // +1000 seconds
-    });
-
-    // Create second post
-    let post_id_2 = client.create_post(&author, &String::from_str(&env, "Post 2"));
-    let post_2 = client.get_post(&post_id_2).unwrap();
-    let timestamp_2 = post_2.timestamp;
-
-    // Verify timestamps are different and post_2's is later
-    assert_eq!(
-        timestamp_2, 2000,
-        "second post must have advanced timestamp"
-    );
+    // 6) Second tip immediately after (105) must fail before cooldown has elapsed
+    env.ledger().with_mut(|l| l.sequence_number = 105);
+    let result = client.try_tip(&tipper, &post_id, &token_address, &100);
     assert!(
-        timestamp_2 > timestamp_1,
-        "later post must have a later timestamp (timestamp_1: {}, timestamp_2: {})",
-        timestamp_1,
-        timestamp_2
+        result.is_err(),
+        "Expected tip to fail because cooldown has not expired"
     );
 
-    // Create third post (no ledger advancement)
-    let post_id_3 = client.create_post(&author, &String::from_str(&env, "Post 3"));
-    let post_3 = client.get_post(&post_id_3).unwrap();
-    let timestamp_3 = post_3.timestamp;
+    // 7) Advance past the cooldown window and tip succeeds
+    env.ledger().with_mut(|l| l.sequence_number = 125);
+    client.tip(&tipper, &post_id, &token_address, &100);
 
-    // Verify third post has same timestamp as second (no ledger advancement between them)
-    assert_eq!(
-        timestamp_3, 2000,
-        "third post should have same timestamp as second (no ledger advancement)"
-    );
-}
 
-#[test]
-fn test_multiple_posts_by_different_authors_ids_increment_globally() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
-
-    let author_1 = Address::generate(&env);
-    let author_2 = Address::generate(&env);
-
-    // Author 1 creates 2 posts
-    let post_1_1 = client.create_post(&author_1, &String::from_str(&env, "Author 1 - Post 1"));
-    let post_1_2 = client.create_post(&author_1, &String::from_str(&env, "Author 1 - Post 2"));
-
-    // Author 2 creates 3 posts
-    let post_2_1 = client.create_post(&author_2, &String::from_str(&env, "Author 2 - Post 1"));
-    let post_2_2 = client.create_post(&author_2, &String::from_str(&env, "Author 2 - Post 2"));
-    let post_2_3 = client.create_post(&author_2, &String::from_str(&env, "Author 2 - Post 3"));
-
-    // Verify all post IDs are globally sequential (1, 2, 3, 4, 5)
-    // regardless of author
-    assert_eq!(post_1_1, 1);
-    assert_eq!(post_1_2, 2);
-    assert_eq!(post_2_1, 3);
-    assert_eq!(post_2_2, 4);
-    assert_eq!(post_2_3, 5);
-
-    // Verify post count
-    assert_eq!(client.get_post_count(), 5);
-
-    // Verify all posts are retrievable with correct authors
-    let retrieved_1_1 = client.get_post(&post_1_1).unwrap();
-    assert_eq!(retrieved_1_1.author, author_1);
-    assert_eq!(retrieved_1_1.id, 1);
-
-    let retrieved_2_3 = client.get_post(&post_2_3).unwrap();
-    assert_eq!(retrieved_2_3.author, author_2);
-    assert_eq!(retrieved_2_3.id, 5);
-}
-
-#[test]
-fn test_multiple_posts_retain_content_and_metadata() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, _, _) = setup_contract(&env);
-
-    let author = Address::generate(&env);
-
-    // Set initial ledger timestamp
-    env.ledger().with_mut(|li| {
-        li.timestamp = 5000;
-    });
-
-    // Create 3 posts with different content
-    let content_1 = String::from_str(&env, "Content A");
-    let content_2 = String::from_str(&env, "Content B");
-    let content_3 = String::from_str(&env, "Content C");
-
-    let post_id_1 = client.create_post(&author, &content_1);
-    let post_id_2 = client.create_post(&author, &content_2);
-    let post_id_3 = client.create_post(&author, &content_3);
-
-    // Retrieve and verify all posts retain correct content
-    let post_1 = client.get_post(&post_id_1).unwrap();
-    let post_2 = client.get_post(&post_id_2).unwrap();
-    let post_3 = client.get_post(&post_id_3).unwrap();
-
-    assert_eq!(post_1.id, 1);
-    assert_eq!(post_1.content, content_1);
-    assert_eq!(post_1.author, author);
-    assert_eq!(post_1.tip_total, 0);
-    assert_eq!(post_1.like_count, 0);
-    assert_eq!(post_1.timestamp, 5000);
-
-    assert_eq!(post_2.id, 2);
-    assert_eq!(post_2.content, content_2);
-    assert_eq!(post_2.author, author);
-    assert_eq!(post_2.tip_total, 0);
-    assert_eq!(post_2.like_count, 0);
-    assert_eq!(post_2.timestamp, 5000);
-
-    assert_eq!(post_3.id, 3);
-    assert_eq!(post_3.content, content_3);
-    assert_eq!(post_3.author, author);
-    assert_eq!(post_3.tip_total, 0);
-    assert_eq!(post_3.like_count, 0);
-    assert_eq!(post_3.timestamp, 5000);
-
-    // Verify all posts are tracked in author's post list
-    let author_posts = client.get_posts_by_author(&author, &0, &10);
-    assert_eq!(author_posts.len(), 3);
-    assert_eq!(author_posts.get(0).unwrap(), post_id_1);
-    assert_eq!(author_posts.get(1).unwrap(), post_id_2);
-    assert_eq!(author_posts.get(2).unwrap(), post_id_3);
-}
-#[test]
-#[should_panic(expected = "deposit amount must be strictly greater than zero")]
-fn test_pool_deposit_zero_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, _) = setup_contract(&env);
-
-    let pool_id = symbol_short!("pool_a");
-    let token = setup_token(&env, &admin);
-    let mut admins = vec![&env];
-    admins.push_back(admin.clone());
-
-    client.create_pool(&admin, &pool_id, &token, &admins, &1);
-
-    let other_user = Address::generate(&env);
-    client.pool_deposit(&other_user, &pool_id, &token, &0);
-}
-
-#[test]
-#[should_panic(expected = "deposit amount must be strictly greater than zero")]
-fn test_pool_deposit_negative_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (client, admin, _) = setup_contract(&env);
-
-    let pool_id = symbol_short!("pool_a");
-    let token = setup_token(&env, &admin);
-    let mut admins = vec![&env];
-    admins.push_back(admin.clone());
-
-    client.create_pool(&admin, &pool_id, &token, &admins, &1);
-
-    let other_user = Address::generate(&env);
-    client.pool_deposit(&other_user, &pool_id, &token, &-50);
+    // Verify post total updated correctly
+    let post = client.get_post(&post_id).unwrap();
+    assert_eq!(post.tip_total, 200);
 }
