@@ -115,6 +115,43 @@ Emitted when the contract WASM is upgraded.
 - **Data Payload**: `ContractUpgraded`
   - `new_wasm_hash`: `BytesN<32>`
 
+#### Upgrade preconditions
+
+`ContractUpgraded` is only emitted when all of the following hold:
+
+1. The contract is **initialized** — the `ADMIN` key exists in instance storage.
+   An uninitialized contract panics with `"not initialized"` before the event is
+   published.
+2. The caller is the **stored admin address** — `require_auth()` is satisfied.
+   Any other caller is rejected before the event is published.
+3. The `new_wasm_hash` refers to a WASM blob **already uploaded** to the Stellar
+   ledger.  The Soroban host validates the hash; if no matching blob is found the
+   host raises an error and the event is **not** committed to the ledger (it may
+   appear only in the failed-diagnostic-events log).
+
+Because event emission occurs inside the contract (before the host finalises the
+WASM swap), a test environment with no uploaded WASM will show the event in
+`env.events().all()` only if the panic is caught.  In production, the event is
+committed only when the full transaction succeeds.
+
+#### Invalid / missing WASM hash behaviour
+
+| Supplied hash | Upload status | Outcome |
+|---|---|---|
+| Any `BytesN<32>` not in the ledger | Not uploaded | Host error; transaction fails; event **not** committed |
+| `[0u8; 32]` (all zeros) | Never a real hash | Same as above |
+| `[0xffu8; 32]` (all 0xff) | Never a real hash | Same as above |
+| Hash returned by `stellar contract upload` | Uploaded | Transaction succeeds; event committed |
+
+#### Monitoring recommendations
+
+Indexers should subscribe to this event to detect unexpected upgrades:
+
+- Alert if a `ContractUpgraded` event appears from an unknown admin address.
+- Alert if the `new_wasm_hash` does not match the hash recorded in the release
+  notes for the expected deployment.
+- Record every upgrade with its ledger sequence number for audit purposes.
+
 ### PostDeleted
 
 Emitted when a post is deleted by its author.

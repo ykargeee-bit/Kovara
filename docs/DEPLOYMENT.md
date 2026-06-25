@@ -105,6 +105,16 @@ Setting `CONTRACT_ID` skips the build and `stellar contract deploy` steps.
 
 Upgrading the Kovara contract replaces the on-chain WASM without changing the contract ID or state.
 
+> **Full upgrade guide:** See [docs/UPGRADE.md](UPGRADE.md) for preconditions, invalid WASM hash handling, the security model, and rollback instructions.
+
+### Preconditions
+
+The following must all be true before `upgrade()` will succeed:
+
+1. The contract has been **initialized** (i.e., `initialize()` was called after deployment). Calling `upgrade` on an uninitialized contract panics with `"not initialized"`.
+2. The **caller is the stored admin** address. Any other address — including the deployer account if it differs from the admin — will be rejected by `require_auth()`.
+3. The `new_wasm_hash` refers to a WASM blob **already uploaded** to the Stellar ledger via `stellar contract upload`. Passing a hash that has not been uploaded (including all-zeros or any other placeholder value) causes the Soroban host to raise a storage error and the transaction fails with no state change.
+
 ### 1. Build the new WASM
 
 ```bash
@@ -116,13 +126,16 @@ The artifact is at `packages/contracts/contracts/Kovara-contracts/target/wasm32v
 ### 2. Upload the new WASM
 
 ```bash
-stellar contract upload \
+WASM_HASH=$(stellar contract upload \
   --network testnet \
   --source-account <DEPLOYER_ALIAS> \
-  --wasm packages/contracts/contracts/Kovara-contracts/target/wasm32v1-none/release/Kovara_contracts.wasm
+  --wasm packages/contracts/contracts/Kovara-contracts/target/wasm32v1-none/release/Kovara_contracts.wasm)
+
+echo "WASM hash: $WASM_HASH"
 ```
 
-Note the printed `wasm_hash`.
+Save the printed `wasm_hash`. This exact value must be passed to `upgrade`.
+Do not use a hash from a previous build or a different network — it will not match any uploaded blob and the call will fail.
 
 ### 3. Invoke the upgrade function
 
@@ -134,8 +147,13 @@ stellar contract invoke \
   --source-account <ADMIN_ALIAS> \
   --id <CONTRACT_ID> \
   -- upgrade \
-  --new-wasm-hash <WASM_HASH>
+  --new-wasm-hash "$WASM_HASH"
 ```
+
+**Common failure causes:**
+- `"not initialized"` — the contract was never initialized; call `initialize` first.
+- Auth error — `<ADMIN_ALIAS>` is not the stored admin address.
+- Host storage error — `WASM_HASH` was not produced by step 2 on this network.
 
 ### 4. Verify
 
@@ -146,7 +164,15 @@ stellar contract invoke \
   -- get_fee_bps
 ```
 
-If the call succeeds, the new WASM is active.
+If the call succeeds, the new WASM is active. You can also confirm via the emitted `ContractUpgraded` event:
+
+```bash
+stellar events \
+  --id <CONTRACT_ID> \
+  --network testnet \
+  --topic "Kovara, upgraded, v1" \
+  --start-ledger <LEDGER_BEFORE_UPGRADE>
+```
 
 > After an upgrade the indexer receives a `ContractUpgraded` event. If you added new event types, redeploy the indexer before the new events start arriving.
 

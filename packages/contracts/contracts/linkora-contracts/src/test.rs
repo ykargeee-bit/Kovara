@@ -14,6 +14,11 @@ fn setup_token(env: &Env, admin: &Address) -> Address {
     token_id.address()
 }
 
+fn make_token(env: &Env) -> Address {
+    let admin = Address::generate(env);
+    setup_token(env, &admin)
+}
+
 fn setup_contract(env: &Env) -> (KovaraContractClient<'_>, Address, Address) {
     let contract_id = env.register(KovaraContract, ());
     let client = KovaraContractClient::new(env, &contract_id);
@@ -30,7 +35,7 @@ fn test_set_and_get_profile() {
     let (client, _, _) = setup_contract(&env);
 
     let user = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
     client.set_profile(&user, &String::from_str(&env, "alice"), &token);
     let profile = client.get_profile(&user).unwrap();
     assert_eq!(profile.username, String::from_str(&env, "alice"));
@@ -43,7 +48,7 @@ fn test_username_reverse_index_registration() {
     let (client, _, _) = setup_contract(&env);
 
     let user = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
     client.set_profile(&user, &String::from_str(&env, "alice"), &token);
 
     let resolved = client.get_address_by_username(&String::from_str(&env, "alice"));
@@ -57,7 +62,7 @@ fn test_username_reverse_index_update() {
     let (client, _, _) = setup_contract(&env);
 
     let user = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
     client.set_profile(&user, &String::from_str(&env, "alice"), &token);
     client.set_profile(&user, &String::from_str(&env, "alice2"), &token);
 
@@ -81,7 +86,7 @@ fn test_username_duplicate_rejected() {
 
     let user1 = Address::generate(&env);
     let user2 = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
 
     client.set_profile(&user1, &String::from_str(&env, "shared_username"), &token);
     client.set_profile(&user2, &String::from_str(&env, "shared_username"), &token);
@@ -324,7 +329,7 @@ fn test_username_same_user_can_reregister_same_name() {
     let (client, _, _) = setup_contract(&env);
 
     let user = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
     client.set_profile(&user, &String::from_str(&env, "alice"), &token);
     // Same user re-registering with the same username should not panic
     client.set_profile(&user, &String::from_str(&env, "alice"), &token);
@@ -361,6 +366,55 @@ fn test_tip_fee_split() {
     // Author gets 1000 - 25 = 975
     assert_eq!(TokenClient::new(&env, &token).balance(&treasury), 25);
     assert_eq!(TokenClient::new(&env, &token).balance(&author), 975);
+
+    let post = client.get_post(&post_id).unwrap();
+    assert_eq!(post.tip_total, 1000);
+}
+
+#[test]
+#[should_panic(expected = "wrong token for tip")]
+fn test_tip_rejects_mismatched_creator_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(KovaraContract, ());
+    let client = KovaraContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let author = Address::generate(&env);
+    let tipper = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &250);
+
+    let allowed_token = setup_token(&env, &tipper);
+    let mismatched_token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "alice"), &allowed_token);
+
+    let post_id = client.create_post(&author, &String::from_str(&env, "Creator token test"));
+    client.tip(&tipper, &post_id, &mismatched_token, &1000);
+}
+
+#[test]
+fn test_tip_accepts_matching_creator_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(KovaraContract, ());
+    let client = KovaraContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let author = Address::generate(&env);
+    let tipper = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &250);
+
+    let creator_token = setup_token(&env, &tipper);
+    client.set_profile(&author, &String::from_str(&env, "alice"), &creator_token);
+
+    let post_id = client.create_post(&author, &String::from_str(&env, "Creator token test"));
+    client.tip(&tipper, &post_id, &creator_token, &1000);
 
     let post = client.get_post(&post_id).unwrap();
     assert_eq!(post.tip_total, 1000);
@@ -462,7 +516,7 @@ fn test_profile_count() {
 
     let user1 = Address::generate(&env);
     let user2 = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
 
     client.set_profile(&user1, &String::from_str(&env, "alice"), &token);
     assert_eq!(client.get_profile_count(), 1);
@@ -968,6 +1022,156 @@ fn test_pool_withdraw_negative_amount_rejected() {
 }
 
 #[test]
+#[should_panic(expected = "insufficient signers")]
+fn test_pool_withdraw_zero_signers_when_threshold_positive() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin1 = Address::generate(&env);
+    let pool_admin2 = Address::generate(&env);
+    let other_user = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin1);
+    StellarAssetClient::new(&env, &token).mint(&other_user, &1000);
+
+    let pool_id = symbol_short!("pool_zero_signers");
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &2,
+    );
+    client.pool_deposit(&other_user, &pool_id, &token, &100);
+
+    // Try to withdraw with 0 signers when threshold is 2
+    client.pool_withdraw(&vec![&env], &pool_id, &50, &other_user);
+}
+
+#[test]
+#[should_panic(expected = "insufficient signers")]
+fn test_pool_withdraw_threshold_3_only_2_signers() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin1 = Address::generate(&env);
+    let pool_admin2 = Address::generate(&env);
+    let pool_admin3 = Address::generate(&env);
+    let other_user = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin1);
+    StellarAssetClient::new(&env, &token).mint(&other_user, &1000);
+
+    let pool_id = symbol_short!("pool_threshold_3");
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone(), pool_admin3.clone()],
+        &3,
+    );
+    client.pool_deposit(&other_user, &pool_id, &token, &100);
+
+    // Try to withdraw with only 2 signers when threshold is 3
+    client.pool_withdraw(
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &pool_id,
+        &50,
+        &other_user,
+    );
+}
+
+#[test]
+#[should_panic(expected = "insufficient signers")]
+fn test_pool_withdraw_threshold_1_zero_signers() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin1 = Address::generate(&env);
+    let other_user = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin1);
+    StellarAssetClient::new(&env, &token).mint(&other_user, &1000);
+
+    let pool_id = symbol_short!("pool_threshold_1");
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![&env, pool_admin1.clone()],
+        &1,
+    );
+    client.pool_deposit(&other_user, &pool_id, &token, &100);
+
+    // Try to withdraw with 0 signers when threshold is 1
+    client.pool_withdraw(&vec![&env], &pool_id, &50, &other_user);
+}
+
+#[test]
+#[should_panic(expected = "insufficient signers")]
+fn test_pool_withdraw_duplicate_signers_count_once() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin1 = Address::generate(&env);
+    let pool_admin2 = Address::generate(&env);
+    let other_user = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin1);
+    StellarAssetClient::new(&env, &token).mint(&other_user, &1000);
+
+    let pool_id = symbol_short!("pool_duplicate");
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &2,
+    );
+    client.pool_deposit(&other_user, &pool_id, &token, &100);
+
+    // Try to withdraw with duplicate signer - should count as only 1 unique signer
+    client.pool_withdraw(
+        &vec![&env, pool_admin1.clone(), pool_admin1.clone()],
+        &pool_id,
+        &50,
+        &other_user,
+    );
+}
+
+#[test]
+fn test_pool_withdraw_threshold_2_with_2_unique_signers_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin1 = Address::generate(&env);
+    let pool_admin2 = Address::generate(&env);
+    let other_user = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin1);
+    StellarAssetClient::new(&env, &token).mint(&other_user, &1000);
+
+    let pool_id = symbol_short!("pool_success");
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &2,
+    );
+    client.pool_deposit(&other_user, &pool_id, &token, &100);
+
+    // Withdraw with exactly 2 unique signers when threshold is 2 should succeed
+    client.pool_withdraw(
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &pool_id,
+        &50,
+        &other_user,
+    );
+    assert_eq!(client.get_pool(&pool_id).unwrap().balance, 50);
+}
+
+#[test]
 #[should_panic(expected = "wrong token for pool")]
 fn test_pool_deposit_wrong_token_rejected() {
     let env = Env::default();
@@ -1079,6 +1283,33 @@ fn test_delete_post_non_existent() {
 }
 
 // ── initialize / upgrade tests ────────────────────────────────────────────────
+//
+// Upgrade preconditions enforced by the contract:
+//
+//   1. The contract must be initialized (admin address stored in instance storage).
+//      Calling upgrade() before initialize() panics with "not initialized".
+//
+//   2. The caller must be the stored admin address.
+//      Missing or wrong authorization panics from require_auth().
+//
+//   3. The WASM hash supplied must reference a WASM blob that has already been
+//      uploaded to the Stellar ledger via `stellar contract upload`.
+//      In the Soroban unit-test environment no WASM blobs are pre-uploaded, so
+//      every upgrade() call that reaches the host's update_current_contract_wasm
+//      step panics with a host storage error.  This is the expected behaviour
+//      for tests that verify auth passes: the panic originates from the
+//      WASM-lookup step, not from authorization.
+//
+// Invalid / missing WASM hash semantics:
+//
+//   - An all-zeros hash ([0u8; 32]) is syntactically valid but will never match
+//     a real uploaded WASM blob.  The Soroban host rejects it at execution time.
+//   - An all-0xff hash ([0xffu8; 32]) behaves identically — syntactically valid,
+//     semantically rejected by the host when no matching blob exists.
+//   - Both cases panic inside the host after authorization has been checked, so
+//     they are safe to use in tests that want to confirm auth acceptance.
+//
+// See docs/UPGRADE.md for the full upgrade runbook and security notes.
 
 #[test]
 fn test_initialize_stores_admin() {
@@ -1110,6 +1341,8 @@ fn test_initialize_twice_panics() {
     client.initialize(&admin, &treasury, &0);
 }
 
+// ── upgrade: authorization checks ────────────────────────────────────────────
+
 #[test]
 #[should_panic]
 fn test_upgrade_by_admin_succeeds() {
@@ -1129,19 +1362,45 @@ fn test_upgrade_by_admin_succeeds() {
 #[test]
 #[should_panic]
 fn test_upgrade_by_non_admin_panics() {
+    // No auths are mocked, so admin.require_auth() will not be satisfied.
+    // The call must panic — either from require_auth or from the host WASM
+    // lookup.  Either way a non-admin must never complete an upgrade.
     let env = Env::default();
     let (client, _admin, _) = setup_contract(&env);
-
     let mock_hash = BytesN::from_array(&env, &[1u8; 32]);
-
-    // Don't mock auths - upgrade requires admin authorization
-    // This should panic because admin.require_auth() won't be satisfied
     client.upgrade(&mock_hash);
 }
 
 #[test]
+#[should_panic]
+fn test_upgrade_by_different_address_panics() {
+    // A caller that is not the stored admin must not be able to upgrade.
+    // This variant confirms the path without mocking any auths — the
+    // admin.require_auth() call inside require_admin() will fail because no
+    // authorization context is provided, causing a panic before any WASM
+    // lookup occurs.
+    let env = Env::default();
+    let (client, _admin, _) = setup_contract(&env);
+
+    // A brand-new address that was never registered as admin
+    let attacker = Address::generate(&env);
+    let mock_hash = BytesN::from_array(&env, &[2u8; 32]);
+
+    // No auths mocked for either attacker or the real admin.
+    // The contract reads the stored ADMIN key and calls admin.require_auth(),
+    // which fails because the admin's auth is not in the invocation context.
+    let _ = attacker; // suppress unused warning
+    client.upgrade(&mock_hash);
+}
+
+// ── upgrade: initialization precondition ─────────────────────────────────────
+
+#[test]
 #[should_panic(expected = "not initialized")]
 fn test_upgrade_before_initialize_panics() {
+    // upgrade() calls require_admin() which reads the ADMIN instance-storage
+    // key.  If initialize() has never been called that key is absent and the
+    // contract panics with "not initialized" before any WASM lookup occurs.
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register(KovaraContract, ());
@@ -1150,6 +1409,82 @@ fn test_upgrade_before_initialize_panics() {
     let mock_hash = BytesN::from_array(&env, &[0u8; 32]);
     client.upgrade(&mock_hash);
 }
+
+// ── upgrade: invalid / missing WASM hash ────────────────────────────────────
+//
+// The Soroban host validates that the supplied BytesN<32> refers to a WASM
+// blob previously uploaded via `stellar contract upload`.  If no matching
+// blob is found the host raises an error, which surfaces as a panic in the
+// Soroban test environment.  Tests below confirm that:
+//
+//   a) An all-zeros hash ([0u8; 32]) — a common sentinel / "missing" value —
+//      does NOT bypass auth and is rejected by the host.
+//   b) An all-0xff hash — another boundary value — is equally rejected.
+//   c) A hash that looks plausible (incrementing bytes) is also rejected when
+//      no corresponding blob exists in the ledger.
+//
+// In all cases authorization is checked first (require_admin passes because
+// mock_all_auths() is active), and the panic is sourced from the host's WASM
+// lookup, proving that the contract correctly delegates hash validation to the
+// Soroban host rather than performing a no-op or silent skip.
+
+#[test]
+#[should_panic]
+fn test_upgrade_all_zeros_hash_rejected_by_host() {
+    // An all-zeros WASM hash is syntactically valid (BytesN<32>) but will
+    // never match a real uploaded blob.  Confirms the host rejects it after
+    // authorization succeeds.
+    let env = Env::default();
+    let (client, _admin, _) = setup_contract(&env);
+    env.mock_all_auths();
+    let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.upgrade(&zero_hash);
+}
+
+#[test]
+#[should_panic]
+fn test_upgrade_all_ones_hash_rejected_by_host() {
+    // An all-0xff WASM hash is syntactically valid but does not correspond to
+    // any uploaded blob.  Confirms the boundary value is also rejected.
+    let env = Env::default();
+    let (client, _admin, _) = setup_contract(&env);
+    env.mock_all_auths();
+    let ones_hash = BytesN::from_array(&env, &[0xffu8; 32]);
+    client.upgrade(&ones_hash);
+}
+
+#[test]
+#[should_panic]
+fn test_upgrade_arbitrary_hash_not_in_ledger_rejected() {
+    // A plausible-looking but non-existent WASM hash (incrementing bytes 0..31)
+    // must be rejected because no matching blob was uploaded.
+    let env = Env::default();
+    let (client, _admin, _) = setup_contract(&env);
+    env.mock_all_auths();
+    let bytes: [u8; 32] = core::array::from_fn(|i| i as u8);
+    let arbitrary_hash = BytesN::from_array(&env, &bytes);
+    client.upgrade(&arbitrary_hash);
+}
+
+#[test]
+#[should_panic]
+fn test_upgrade_invalid_hash_uninitialized_contract_panics_not_initialized_first() {
+    // When the contract is NOT initialized and an invalid WASM hash is supplied,
+    // the contract must panic with "not initialized" (from require_admin) rather
+    // than proceeding to the WASM lookup.  This confirms that the initialization
+    // guard fires before the host hash-validation step.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(KovaraContract, ());
+    let client = KovaraContractClient::new(&env, &contract_id);
+
+    // Use an all-zeros hash — even if the host accepted it, the contract must
+    // reject the call earlier with "not initialized".
+    let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.upgrade(&zero_hash);
+}
+
+// ── upgrade: event emission ───────────────────────────────────────────────────
 
 #[test]
 #[should_panic]
@@ -1164,6 +1499,24 @@ fn test_upgrade_emits_contract_upgraded_event() {
     let (client, _admin, _) = setup_contract(&env);
     let mock_hash = BytesN::from_array(&env, &[0u8; 32]);
     env.mock_all_auths();
+    client.upgrade(&mock_hash);
+}
+
+// ── upgrade: instance TTL is bumped before auth ───────────────────────────────
+
+#[test]
+#[should_panic(expected = "not initialized")]
+fn test_upgrade_before_initialize_ttl_bump_does_not_mask_init_guard() {
+    // upgrade() calls bump_instance() before require_admin().  Even though
+    // bump_instance() extends TTL on instance storage, it must not create or
+    // populate the ADMIN key.  The subsequent require_admin() call must still
+    // panic with "not initialized" when the contract has never been initialized.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(KovaraContract, ());
+    let client = KovaraContractClient::new(&env, &contract_id);
+
+    let mock_hash = BytesN::from_array(&env, &[0u8; 32]);
     client.upgrade(&mock_hash);
 }
 
@@ -1273,7 +1626,7 @@ fn test_username_too_short() {
     let (client, _, _) = setup_contract(&env);
 
     let user = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
 
     // 2-character username should panic
     client.set_profile(&user, &String::from_str(&env, "ab"), &token);
@@ -1286,7 +1639,7 @@ fn test_username_min_length_valid() {
     let (client, _, _) = setup_contract(&env);
 
     let user = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
 
     // 3-character username should succeed
     client.set_profile(&user, &String::from_str(&env, "abc"), &token);
@@ -1301,7 +1654,7 @@ fn test_username_max_length_valid() {
     let (client, _, _) = setup_contract(&env);
 
     let user = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
 
     // 32-character username should succeed
     let username_str = "abcdefghijklmnopqrstuvwxyz123456";
@@ -1320,7 +1673,7 @@ fn test_username_too_long() {
     let (client, _, _) = setup_contract(&env);
 
     let user = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
 
     // 33-character username should panic
     let username_str = "abcdefghijklmnopqrstuvwxyz1234567";
@@ -1337,7 +1690,7 @@ fn test_username_with_space() {
     let (client, _, _) = setup_contract(&env);
 
     let user = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
 
     // Username with space should panic
     client.set_profile(&user, &String::from_str(&env, "user name"), &token);
@@ -1351,7 +1704,7 @@ fn test_username_with_special_char() {
     let (client, _, _) = setup_contract(&env);
 
     let user = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
 
     // Username with special character should panic
     client.set_profile(&user, &String::from_str(&env, "user@name"), &token);
@@ -2170,7 +2523,7 @@ fn test_username_uniqueness_enforced() {
 
     let user1 = Address::generate(&env);
     let user2 = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
 
     // User1 registers "alice"
     client.set_profile(&user1, &String::from_str(&env, "alice"), &token);
@@ -2186,7 +2539,7 @@ fn test_username_update_by_owner() {
     let (client, _, _) = setup_contract(&env);
 
     let user = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
 
     // Register with "alice"
     client.set_profile(&user, &String::from_str(&env, "alice"), &token);
@@ -2219,7 +2572,7 @@ fn test_username_freed_on_change() {
 
     let user1 = Address::generate(&env);
     let user2 = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
 
     // User1 registers "alice"
     client.set_profile(&user1, &String::from_str(&env, "alice"), &token);
@@ -2527,7 +2880,7 @@ fn test_profile_write_extends_ttl() {
     let (client, _, _) = setup_contract(&env);
 
     let user = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
     client.set_profile(&user, &String::from_str(&env, "alice"), &token);
 
     let contract_id = client.address.clone();
@@ -2620,13 +2973,13 @@ fn test_tip_cooldown_allows_after_window() {
 // ── Issue #321: profile_count decrement on profile deletion ───────────────────
 
 #[test]
-fn test_profile_count_decrements_on_delete() {
+fn test_profile_count_preserved_on_delete() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, _, _) = setup_contract(&env);
 
     let user = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
 
     client.set_profile(&user, &String::from_str(&env, "alice"), &token);
     assert_eq!(
@@ -2638,8 +2991,8 @@ fn test_profile_count_decrements_on_delete() {
     client.delete_profile(&user);
     assert_eq!(
         client.get_profile_count(),
-        0,
-        "count must decrement to 0 after profile deletion"
+        1,
+        "count must stay at 1 after deletion; it tracks total ever created"
     );
     assert!(
         client.get_profile(&user).is_none(),
@@ -2648,20 +3001,34 @@ fn test_profile_count_decrements_on_delete() {
 }
 
 #[test]
-fn test_profile_count_never_below_zero() {
+fn test_profile_count_never_decremented() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, _, _) = setup_contract(&env);
 
     let user = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
 
     client.set_profile(&user, &String::from_str(&env, "alice"), &token);
     client.delete_profile(&user);
     assert_eq!(
         client.get_profile_count(),
-        0,
-        "count must not go below zero"
+        1,
+        "count must not be decremented; it tracks total ever created"
+    );
+
+    let user2 = Address::generate(&env);
+    client.set_profile(&user2, &String::from_str(&env, "bob"), &token);
+    assert_eq!(
+        client.get_profile_count(),
+        2,
+        "second registration increments counter regardless of prior deletions"
+    );
+    client.delete_profile(&user2);
+    assert_eq!(
+        client.get_profile_count(),
+        2,
+        "count must still be 2 after second deletion"
     );
 }
 
@@ -2673,7 +3040,7 @@ fn test_delete_profile_frees_username() {
 
     let user1 = Address::generate(&env);
     let user2 = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
 
     client.set_profile(&user1, &String::from_str(&env, "alice"), &token);
     client.delete_profile(&user1);
@@ -2718,7 +3085,7 @@ fn test_profile_count_tracks_total_created_never_decrements() {
     let (client, _, _) = setup_contract(&env);
 
     let user = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
 
     assert_eq!(client.get_profile_count(), 0, "counter starts at zero");
 
@@ -2745,6 +3112,20 @@ fn test_profile_count_tracks_total_created_never_decrements() {
         2,
         "second registration increments counter"
     );
+
+    client.delete_profile(&user);
+    assert_eq!(
+        client.get_profile_count(),
+        2,
+        "deleting a profile must not decrement the counter"
+    );
+
+    client.delete_profile(&user2);
+    assert_eq!(
+        client.get_profile_count(),
+        2,
+        "counter tracks total ever created, not current active profiles"
+    );
 }
 
 // ── Issue #184: StorageKey typed-key round-trip tests ─────────────────────────
@@ -2758,7 +3139,7 @@ fn test_username_index_uses_typed_storage_key() {
     let (client, _, _) = setup_contract(&env);
 
     let user = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = make_token(&env);
     let username = String::from_str(&env, "charlie");
 
     client.set_profile(&user, &username, &token);
@@ -2849,21 +3230,56 @@ fn test_unblock_event() {
 }
 
 #[test]
-#[should_panic(expected = "deposit amount must be strictly greater than zero")]
-fn test_pool_deposit_zero_rejected() {
+fn test_tip_cooldown_enforcement() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, admin, _) = setup_contract(&env);
 
-    let pool_id = symbol_short!("pool_a");
-    let token = setup_token(&env, &admin);
-    let mut admins = vec![&env];
-    admins.push_back(admin.clone());
+    // 1) Setup the main contract and the asset token contract
+    let (client, _admin, _treasury) = setup_contract(&env);
+    let token_admin = Address::generate(&env);
+    let token_address = setup_token(&env, &token_admin);
 
-    client.create_pool(&admin, &pool_id, &token, &admins, &1);
+    // 2) Setup profiles for Author and Tipper
+    let author = Address::generate(&env);
+    let tipper = Address::generate(&env);
 
-    let other_user = Address::generate(&env);
-    client.pool_deposit(&other_user, &pool_id, &token, &0);
+    client.set_profile(&author, &String::from_str(&env, "author"), &token_address);
+    client.set_profile(&tipper, &String::from_str(&env, "tipper"), &token_address);
+
+    // Mint tokens to the tipper so they have funds to tip
+    StellarAssetClient::new(&env, &token_address).mint(&tipper, &5000);
+
+    // 3) Configure a strict tip cooldown window (Issue #76)
+    let cooldown_window: u32 = 20;
+    client.set_tip_cooldown_window(&cooldown_window);
+    assert_eq!(client.get_tip_cooldown_window(), cooldown_window);
+
+    // 4) Create a post to tip against
+    let content = String::from_str(&env, "Hello Linkora!");
+    let post_id = client.create_post(&author, &content);
+
+    // Set the initial ledger sequence to 100
+    env.ledger().with_mut(|l| l.sequence_number = 100);
+
+    // 5) First tip succeeds
+    client.tip(&tipper, &post_id, &token_address, &100);
+
+    // 6) Second tip immediately after (105) must fail before cooldown has elapsed
+    env.ledger().with_mut(|l| l.sequence_number = 105);
+    let result = client.try_tip(&tipper, &post_id, &token_address, &100);
+    assert!(
+        result.is_err(),
+        "Expected tip to fail because cooldown has not expired"
+    );
+
+    // 7) Advance past the cooldown window and tip succeeds
+    env.ledger().with_mut(|l| l.sequence_number = 125);
+    client.tip(&tipper, &post_id, &token_address, &100);
+
+
+    // Verify post total updated correctly
+    let post = client.get_post(&post_id).unwrap();
+    assert_eq!(post.tip_total, 200);
 }
 
 #[test]

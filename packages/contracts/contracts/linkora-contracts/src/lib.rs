@@ -325,6 +325,15 @@ fn validate_username(username: &String) -> Result<(), &'static str> {
     Ok(())
 }
 
+fn validate_creator_token(env: &Env, token: &Address) -> Result<(), &'static str> {
+    if *token == env.current_contract_address() {
+        return Err("creator token cannot be the contract itself");
+    }
+    let token_client = token::Client::new(env, token);
+    token_client.name();
+    Ok(())
+}
+
 fn validate_content(content: &String) -> Result<(), &'static str> {
     let len = content.len();
     if len < MIN_CONTENT_LEN {
@@ -384,6 +393,7 @@ impl KovaraContract {
         Self::bump_instance(&env);
         user.require_auth();
         validate_username(&username).expect("invalid username");
+        validate_creator_token(&env, &creator_token).expect("invalid creator token");
 
         let key = StorageKey::Profile(user.clone());
         let username_index_key = StorageKey::UsernameIndex(username.clone());
@@ -467,17 +477,6 @@ impl KovaraContract {
             .persistent()
             .remove(&StorageKey::UsernameIndex(profile.username));
         env.storage().persistent().remove(&key);
-
-        let count: u64 = env
-            .storage()
-            .instance()
-            .get(&PROFILE_CREATED_CT)
-            .unwrap_or(0);
-        if count > 0 {
-            env.storage()
-                .instance()
-                .set(&PROFILE_CREATED_CT, &(count - 1));
-        }
     }
 
     pub fn get_address_by_username(env: Env, username: String) -> Option<Address> {
@@ -524,9 +523,9 @@ impl KovaraContract {
                 .persistent()
                 .set(&followers_key, &followers_list);
             Self::bump(&env, &followers_key);
-        }
 
-        FollowEvent { follower, followee }.publish(&env);
+            FollowEvent { follower, followee }.publish(&env);
+        }
     }
 
     pub fn unfollow(env: Env, follower: Address, followee: Address) {
@@ -560,9 +559,9 @@ impl KovaraContract {
                     .set(&followers_key, &followers_list);
                 Self::bump(&env, &followers_key);
             }
-        }
 
-        UnfollowEvent { follower, followee }.publish(&env);
+            UnfollowEvent { follower, followee }.publish(&env);
+        }
     }
 
     pub fn get_following(env: Env, user: Address, offset: u32, limit: u32) -> Vec<Address> {
@@ -797,6 +796,14 @@ impl KovaraContract {
             panic!("blocked");
         }
 
+        if let Some(profile) = env
+            .storage()
+            .persistent()
+            .get::<_, Profile>(&StorageKey::Profile(post.author.clone()))
+        {
+            assert!(profile.creator_token == token, "wrong token for tip");
+        }
+
         // Check tip cooldown: one tip per tipper per post per cooldown window.
         let cooldown_key = StorageKey::TipCooldown(post_id, tipper.clone());
         let current_ledger = env.ledger().sequence();
@@ -905,7 +912,10 @@ impl KovaraContract {
         amount: i128,
     ) {
         Self::bump_instance(&env);
-        assert!(amount > 0, "deposit amount must be strictly greater than zero");
+        assert!(
+            amount > 0,
+            "deposit amount must be strictly greater than zero"
+        );
         depositor.require_auth();
         let key = StorageKey::Pool(pool_id.clone());
         let mut pool: Pool = env

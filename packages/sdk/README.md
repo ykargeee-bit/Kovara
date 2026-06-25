@@ -47,6 +47,135 @@ const client = new KovaraClient({
 
 ---
 
+---
+
+## Import Semantics: Browser vs Node.js
+
+The SDK ships a single CommonJS bundle (`dist/index.js`) with accompanying TypeScript
+declarations (`dist/index.d.ts`). The examples below cover every common environment.
+
+### Browser (ESM via bundler — Vite, webpack, Next.js, etc.)
+
+Modern bundlers resolve the `"exports"` field in `package.json` and tree-shake unused exports automatically.
+
+```ts
+// Any modern bundler will resolve this to the correct dist file.
+import { KovaraClient } from "Kovara-sdk";
+
+const client = new KovaraClient({
+  contractId: "CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+  rpcUrl: "https://soroban-testnet.stellar.org",
+  networkPassphrase: "Test SDF Network ; September 2015",
+});
+
+const post = await client.get_post({ id: 1n });
+console.log(post.result?.content);
+```
+
+> **Note on BigInt**: Soroban `u64`/`i128` values are represented as JavaScript `bigint`.
+> Ensure your bundler target supports `BigInt` (ES2020+). In Vite set `target: 'es2020'`
+> in `vite.config.ts`; in webpack set `target: 'web'` with `experiments.outputModule: true`.
+
+### Browser (CDN / script tag — no bundler)
+
+The SDK does **not** ship a standalone IIFE or UMD bundle. For no-bundler browser usage,
+use a CDN that supports ESM, such as esm.sh or jspm:
+
+```html
+<script type="module">
+  // esm.sh transpiles npm packages to browser-native ES modules on the fly.
+  import { KovaraClient } from "https://esm.sh/Kovara-sdk";
+
+  const client = new KovaraClient({
+    contractId: "C...",
+    rpcUrl: "https://soroban-testnet.stellar.org",
+  });
+</script>
+```
+
+### Node.js — CommonJS (`require`)
+
+The published `dist/index.js` is a CommonJS module, so it works directly with `require`:
+
+```js
+// index.js  (Node.js CJS)
+const { KovaraClient } = require("Kovara-sdk");
+
+async function main() {
+  const client = new KovaraClient({
+    contractId: "C...",
+    rpcUrl: "https://soroban-testnet.stellar.org",
+    networkPassphrase: "Test SDF Network ; September 2015",
+  });
+
+  const posts = await client.get_posts({ page: 0, limit: 10 });
+  console.log(posts.result);
+}
+
+main().catch(console.error);
+```
+
+### Node.js — ESM (`import`) with TypeScript
+
+When your TypeScript project uses `"module": "ESNext"` or `"module": "NodeNext"` you can use
+the standard `import` syntax. The SDK's `"exports"` entry point is resolved automatically.
+
+```ts
+// index.ts  (Node.js ESM + TypeScript)
+import { KovaraClient, NotFoundError } from "Kovara-sdk";
+
+const client = new KovaraClient({
+  contractId: process.env.CONTRACT_ID!,
+  rpcUrl: process.env.RPC_URL ?? "https://soroban-testnet.stellar.org",
+});
+
+try {
+  const profile = await client.get_profile({ address: "G..." });
+  console.log(profile.result?.username);
+} catch (err) {
+  if (err instanceof NotFoundError) {
+    console.error("Profile does not exist on-chain yet.");
+  } else {
+    throw err;
+  }
+}
+```
+
+In `tsconfig.json`, use at least:
+
+```json
+{
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "target": "ES2020",
+    "esModuleInterop": true
+  }
+}
+```
+
+### Named exports reference
+
+All public symbols are re-exported from the top-level entry point:
+
+| Symbol | Description |
+|---|---|
+| `KovaraClient` | Main read/write contract client |
+| `ClientConfig` | Constructor options type |
+| `Profile`, `Post`, `Pool` | On-chain data types |
+| `KovaraError` | Base error class |
+| `NotFoundError` | Resource not found on-chain |
+| `UnauthorizedError` | Caller lacks permission |
+| `InsufficientBalanceError` | Insufficient funds or allowance |
+| `CooldownError` | Tip cooldown still active |
+| `InvalidInputError` | Input failed pre-flight validation |
+| `InvalidManifestError` | Mini-app manifest schema violation |
+| `validateManifest` | Validate a mini-app manifest object |
+| `MiniAppManifest` | Typed mini-app manifest interface |
+| `mapError` | Map raw contract errors to typed errors |
+
+---
+
 ## API Reference
 
 ### Profiles
