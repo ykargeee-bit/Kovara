@@ -2620,7 +2620,7 @@ fn test_tip_cooldown_allows_after_window() {
 // ── Issue #321: profile_count decrement on profile deletion ───────────────────
 
 #[test]
-fn test_profile_count_decrements_on_delete() {
+fn test_profile_count_preserved_on_delete() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, _, _) = setup_contract(&env);
@@ -2638,8 +2638,8 @@ fn test_profile_count_decrements_on_delete() {
     client.delete_profile(&user);
     assert_eq!(
         client.get_profile_count(),
-        0,
-        "count must decrement to 0 after profile deletion"
+        1,
+        "count must stay at 1 after deletion; it tracks total ever created"
     );
     assert!(
         client.get_profile(&user).is_none(),
@@ -2648,7 +2648,7 @@ fn test_profile_count_decrements_on_delete() {
 }
 
 #[test]
-fn test_profile_count_never_below_zero() {
+fn test_profile_count_never_decremented() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, _, _) = setup_contract(&env);
@@ -2660,8 +2660,22 @@ fn test_profile_count_never_below_zero() {
     client.delete_profile(&user);
     assert_eq!(
         client.get_profile_count(),
-        0,
-        "count must not go below zero"
+        1,
+        "count must not be decremented; it tracks total ever created"
+    );
+
+    let user2 = Address::generate(&env);
+    client.set_profile(&user2, &String::from_str(&env, "bob"), &token);
+    assert_eq!(
+        client.get_profile_count(),
+        2,
+        "second registration increments counter regardless of prior deletions"
+    );
+    client.delete_profile(&user2);
+    assert_eq!(
+        client.get_profile_count(),
+        2,
+        "count must still be 2 after second deletion"
     );
 }
 
@@ -2744,6 +2758,20 @@ fn test_profile_count_tracks_total_created_never_decrements() {
         client.get_profile_count(),
         2,
         "second registration increments counter"
+    );
+
+    client.delete_profile(&user);
+    assert_eq!(
+        client.get_profile_count(),
+        2,
+        "deleting a profile must not decrement the counter"
+    );
+
+    client.delete_profile(&user2);
+    assert_eq!(
+        client.get_profile_count(),
+        2,
+        "counter tracks total ever created, not current active profiles"
     );
 }
 
@@ -2883,4 +2911,3 @@ fn test_pool_deposit_negative_rejected() {
     let other_user = Address::generate(&env);
     client.pool_deposit(&other_user, &pool_id, &token, &-50);
 }
-
