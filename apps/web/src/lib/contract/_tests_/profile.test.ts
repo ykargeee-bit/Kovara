@@ -13,3 +13,15 @@ describe('setProfile', () => {
     ).rejects.toThrow();
   });
 });
+
+
+export async function getProfile(address: string) {
+  const contractId =
+    process.env.NEXT_PUBLIC_PROFILE_CONTRACT_ID;
+
+  if (!contractId) {
+    throw new Error("Profile contract not configured");
+  }
+
+  // Real contract query goes here
+}
