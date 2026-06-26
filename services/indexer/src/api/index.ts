@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from "express";
 import rateLimit from "express-rate-limit";
 import { Database } from "../db";
+import { ApiErrorResponse, SearchResponse } from "./contracts";
 import { createProfilesRouter } from "./routes/profiles";
 import { createPostsRouter } from "./routes/posts";
 import { createFollowsRouter } from "./routes/follows";
@@ -61,32 +62,13 @@ export function createApp(db: Database): express.Application {
     offset?: number;
   }
 
-  interface Post {
-    id: number;
-    author: string;
-    content: string;
-    tip_total: string;
-    timestamp: number;
-  }
-
-  interface SearchResponse {
-    posts: Post[];
-    total: number;
-    has_more: boolean;
-  }
-
-  interface ErrorResponse {
-    error: string;
-    code: string;
-  }
-
   const MAX_LIMIT = 100;
   const DEFAULT_LIMIT = 20;
   const DEFAULT_OFFSET = 0;
 
   app.post(
     "/api/search/posts",
-    (req: Request, res: Response<SearchResponse | ErrorResponse>): void => {
+    (req: Request, res: Response<SearchResponse | ApiErrorResponse>): void => {
       const body = req.body as Partial<SearchQuery>;
 
       if (
@@ -130,10 +112,12 @@ export function createApp(db: Database): express.Application {
   // ── Error handler ─────────────────────────────────────────────────────────────
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  app.use((err: Error, _req: Request, res: Response, _next: NextFunction): void => {
-    console.error(err);
-    res.status(500).json({ error: "Internal server error", code: "INTERNAL_ERROR" });
-  });
+  app.use(
+    (err: Error, _req: Request, res: Response<ApiErrorResponse>, _next: NextFunction): void => {
+      console.error(err);
+      res.status(500).json({ error: "Internal server error", code: "INTERNAL_ERROR" });
+    }
+  );
 
   return app;
 }
