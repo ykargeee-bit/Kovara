@@ -3,14 +3,12 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useWallet } from "../components/WalletProvider";
 import { classifyError } from "./usePoolContract";
+import { getContractClient, signAndSubmit } from "../../lib/contract/client";
 
-// ── Mock contract client ──────────────────────────────────────────────────────
-// Replace the body with the real SDK call once the generated client is wired up
-// (packages/sdk). Liking is idempotent on-chain: a second call by the same liker
-// is rejected, which is why the UI disables the button after the first like.
-async function contractLikePost(_liker: string, _postId: number): Promise<void> {
-  // TODO: replace with: await client.like_post({ liker, post_id: postId })
-  await new Promise((resolve) => setTimeout(resolve, 600));
+async function contractLikePost(liker: string, postId: number): Promise<void> {
+  const client = getContractClient();
+  const xdr = client.like(liker, postId);
+  await signAndSubmit(xdr);
 }
 
 export interface UseLikeOptions {
