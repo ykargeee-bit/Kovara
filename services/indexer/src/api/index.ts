@@ -1,6 +1,12 @@
+import "express-async-errors";
 import express, { Request, Response, NextFunction } from "express";
 import rateLimit from "express-rate-limit";
 import { Database } from "../db";
+
+// Enable BigInt JSON serialization (Express res.json uses JSON.stringify).
+(BigInt.prototype as unknown as Record<string, unknown>).toJSON = function () {
+  return String(this);
+};
 import { createProfilesRouter } from "./routes/profiles";
 import { createPostsRouter } from "./routes/posts";
 import { createFollowsRouter } from "./routes/follows";
@@ -43,6 +49,11 @@ const apiLimiter = rateLimit({
 export function createApp(db: Database): express.Application {
   const app = express();
   app.use(express.json());
+
+  // ── Health check (unlimited) ────────────────────────────────────────────────
+  app.get("/health", (_req: Request, res: Response): void => {
+    res.json({ status: "ok", uptime: process.uptime() });
+  });
 
   // Apply rate limiting to all /api routes.
   app.use("/api", apiLimiter);
@@ -130,8 +141,8 @@ export function createApp(db: Database): express.Application {
   // ── Error handler ─────────────────────────────────────────────────────────────
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  app.use((err: Error, _req: Request, res: Response, _next: NextFunction): void => {
-    console.error(err);
+  app.use((err: Error, req: Request, res: Response, _next: NextFunction): void => {
+    console.error(`[error] ${req.method} ${req.path}:`, err.message);
     res.status(500).json({ error: "Internal server error", code: "INTERNAL_ERROR" });
   });
 
